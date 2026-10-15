@@ -22,6 +22,7 @@ import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.SwapVert
+import androidx.compose.material.icons.rounded.Sync
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -164,6 +165,15 @@ fun BrowseActionsSheet(
     onReorder: (() -> Unit)? = null,
     onDelete: (() -> Unit)? = null,
     /**
+     * Saves a Spotify playlist to the Library and keeps it in step with
+     * Spotify, or syncs the saved copy now. [spotifySynced] says which of the
+     * two it is, [spotifySyncing] that one is already running. Null on
+     * anything that isn't a Spotify playlist or a copy of one.
+     */
+    onSpotifySync: (() -> Unit)? = null,
+    spotifySynced: Boolean = false,
+    spotifySyncing: Boolean = false,
+    /**
      * Removes the files this release was downloaded as, when it was downloaded
      * whole — see [BrowseTarget.downloadId]. Independent of [onDelete]: that one
      * deletes the playlist from the account, this one only ever touches what's
@@ -290,6 +300,21 @@ fun BrowseActionsSheet(
                         renaming = true
                     }
                 }
+            }
+            onSpotifySync?.let {
+                ActionRow(
+                    icon = Icons.Rounded.Sync,
+                    label = stringResource(
+                        if (spotifySynced) R.string.spotify_sync_now else R.string.spotify_sync_to_library,
+                    ),
+                    value = when {
+                        spotifySyncing -> stringResource(R.string.spotify_syncing)
+                        spotifySynced -> stringResource(R.string.spotify_synced)
+                        else -> null
+                    },
+                    enabled = !spotifySyncing,
+                    onClick = it,
+                )
             }
             onReorder?.let {
                 ActionRow(Icons.Rounded.SwapVert, stringResource(R.string.reorder_songs), onClick = it)

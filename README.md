@@ -55,7 +55,7 @@
 
 #### Connectivity & Accounts
 - **Sign in with your Google account** for personalized content.
-- **Spotify integration** — connect your account to play your playlists and Liked Songs.
+- **Spotify integration** — connect your account to play your playlists and Liked Songs, or save them to your Library and keep them in sync.
 - **Discord Rich Presence** — in-app login, live track/artist/album and progress.
 - **Scrobbling** to Last.fm and ListenBrainz.
 - **Pluggable sources** — add, edit, test and health-check module sources.

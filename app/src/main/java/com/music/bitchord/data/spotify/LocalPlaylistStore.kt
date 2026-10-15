@@ -12,8 +12,18 @@ data class LocalPlaylist(
     val id: String,
     val title: String,
     val songs: List<Song>,
+    /** The Spotify playlist this one is kept in step with, or null for a one-off import. */
+    val spotifyId: String? = null,
+    /** Each song's Spotify track id, in the same order as [songs]; empty unless [spotifyId] is set. */
+    val spotifyTrackIds: List<String> = emptyList(),
+    /** When the last sync with Spotify finished, in epoch milliseconds. */
+    val syncedAt: Long = 0L,
 ) {
     val browseId: String get() = "local:playlist:$id"
+
+    /** The rows a re-sync can reuse instead of searching for again. */
+    val syncedTracks: List<SyncedTrack>
+        get() = spotifyTrackIds.zip(songs) { trackId, song -> SyncedTrack(trackId, song) }
 }
 
 object LocalPlaylistStore {
@@ -57,7 +67,21 @@ object LocalPlaylistStore {
                     )
                     songs.add(song)
                 }
-                list.add(LocalPlaylist(id, title, songs))
+                val trackIds = obj.optJSONArray("spotifyTrackIds")
+                    ?.let { ids -> List(ids.length()) { ids.getString(it) } }
+                    .orEmpty()
+                list.add(
+                    LocalPlaylist(
+                        id = id,
+                        title = title,
+                        songs = songs,
+                        spotifyId = obj.optString("spotifyId", "").takeIf { it.isNotBlank() },
+                        // A copy whose ids no longer line up with its songs is
+                        // treated as never synced, so the next sync rebuilds it.
+                        spotifyTrackIds = trackIds.takeIf { it.size == songs.size }.orEmpty(),
+                        syncedAt = obj.optLong("syncedAt", 0L),
+                    ),
+                )
             }
             _playlists.value = list
         }
@@ -67,6 +91,38 @@ object LocalPlaylistStore {
         val id = "sp_local_" + System.currentTimeMillis()
         val playlist = LocalPlaylist(id = id, title = title, songs = songs)
         val updated = listOf(playlist) + _playlists.value.filterNot { it.id == id }
+        _playlists.value = updated
+        persist(updated)
+        return playlist
+    }
+
+    /** The saved copy of Spotify playlist [spotifyId], if it has been synced. */
+    fun syncedPlaylist(spotifyId: String): LocalPlaylist? =
+        _playlists.value.firstOrNull { it.spotifyId == spotifyId }
+
+    /** Every playlist kept in step with Spotify. */
+    fun syncedPlaylists(): List<LocalPlaylist> = _playlists.value.filter { it.spotifyId != null }
+
+    /**
+     * Saves the result of syncing Spotify playlist [spotifyId]: over its
+     * existing copy when there is one, keeping that copy's id, place in the
+     * list and any name the user gave it, and as a new playlist otherwise.
+     */
+    fun saveSynced(spotifyId: String, title: String, tracks: List<SyncedTrack>): LocalPlaylist {
+        val existing = syncedPlaylist(spotifyId)
+        val playlist = LocalPlaylist(
+            id = existing?.id ?: ("sp_sync_" + System.currentTimeMillis()),
+            title = existing?.title ?: title,
+            songs = tracks.map { it.song },
+            spotifyId = spotifyId,
+            spotifyTrackIds = tracks.map { it.spotifyId },
+            syncedAt = System.currentTimeMillis(),
+        )
+        val updated = if (existing != null) {
+            _playlists.value.map { if (it.id == existing.id) playlist else it }
+        } else {
+            listOf(playlist) + _playlists.value
+        }
         _playlists.value = updated
         persist(updated)
         return playlist
@@ -117,6 +173,11 @@ object LocalPlaylistStore {
                     songsArray.put(sObj)
                 }
                 pObj.put("songs", songsArray)
+                playlist.spotifyId?.let { spotifyId ->
+                    pObj.put("spotifyId", spotifyId)
+                    pObj.put("spotifyTrackIds", JSONArray(playlist.spotifyTrackIds))
+                    pObj.put("syncedAt", playlist.syncedAt)
+                }
                 jsonArray.put(pObj)
             }
             prefs.edit().putString(KEY_PLAYLISTS, jsonArray.toString()).apply()
