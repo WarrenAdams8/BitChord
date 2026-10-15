@@ -16,9 +16,13 @@ import com.music.bitchord.data.LikeState
 import com.music.bitchord.data.YtMusicRepository
 import com.music.bitchord.data.model.SPOTIFY_MISSING_PREFIX
 import com.music.bitchord.data.model.SPOTIFY_PENDING_PREFIX
+import com.music.bitchord.data.spotify.LocalPlaylist
+import com.music.bitchord.data.spotify.LocalPlaylistStore
 import com.music.bitchord.data.spotify.SPOTIFY_PAGE_PREFIX
 import com.music.bitchord.data.spotify.SpotifyImporter
 import com.music.bitchord.data.spotify.SpotifyLibrary
+import com.music.bitchord.data.spotify.SpotifySync
+import com.music.bitchord.data.spotify.SpotifySyncResult
 import com.music.bitchord.data.spotify.SpotifyTrack
 import com.music.bitchord.data.lyrics.EmbeddedLyrics
 import com.music.bitchord.data.lyrics.LyricLine
@@ -213,6 +217,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }.flowOn(Dispatchers.Default)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    /**
+     * Spotify playlists being synced right now, by Spotify playlist id. Above
+     * [init] for the same reason as the search state below.
+     */
+    private val _spotifySyncing = MutableStateFlow<Set<String>>(emptySet())
+    val spotifySyncing: StateFlow<Set<String>> = _spotifySyncing.asStateFlow()
 
     // The search pipeline's own state. Declared here, above [init], because
     // that is where the collector is started from and a property declared
@@ -1396,6 +1407,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             loadAccount()
             loadPlaylists()
         }
+        // Synced Spotify playlists catch up with whatever changed on Spotify
+        // since the app was last open.
+        syncStaleSpotifyPlaylists()
         viewModelScope.launch {
             // drop(1): the current value is just the count so far, not a play.
             PlaybackTracker.registeredPlays.drop(1).collect { homeStale = true }
@@ -2303,6 +2317,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         /** How many Spotify tracks are looked up on YouTube Music at once. */
         private const val SPOTIFY_MATCH_PARALLELISM = 6
 
+        /** How old a synced Spotify playlist gets before opening the app brings it up to date. */
+        private const val SPOTIFY_RESYNC_INTERVAL_MS = 6 * 60 * 60 * 1000L
+
         /**
          * How long a keystroke waits before the typeahead is asked about it.
          *
@@ -2649,13 +2666,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 setSongs(UiState.Error(text(R.string.spotify_empty_tracks)))
                 return@launch
             }
+            // A playlist synced to the Library already knows most of its
+            // matches; only what was added since is searched for.
+            val known = LocalPlaylistStore.syncedPlaylist(playlistId)?.syncedTracks.orEmpty()
+                .associate { it.spotifyId to it.song }
             val gate = Semaphore(SPOTIFY_MATCH_PARALLELISM)
             coroutineScope {
                 tracks.forEachIndexed { index, track ->
                     launch {
                         gate.withPermit {
                             if (!open()) return@withPermit
-                            val match = runCatching { SpotifyImporter.matchTrack(track) }.getOrNull()
+                            val match = known[track.id]
+                                ?: runCatching { SpotifyImporter.matchTrack(track) }.getOrNull()
                             val found = match?.copy(thumbnailUrl = match.thumbnailUrl ?: track.imageUrl)
                                 ?: track.asPendingSong().let {
                                     it.copy(videoId = SPOTIFY_MISSING_PREFIX + track.id)
@@ -2683,6 +2705,60 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         },
         albumName = album,
     )
+
+    /**
+     * Saves Spotify playlist [spotifyId] to the Library as a playlist kept on
+     * this device, or brings the saved copy up to date with Spotify. Only the
+     * tracks added since the last sync are searched for on YouTube Music.
+     */
+    fun syncSpotifyPlaylist(
+        spotifyId: String,
+        title: String,
+        onResult: (Result<Pair<LocalPlaylist, SpotifySyncResult>>) -> Unit = {},
+    ) {
+        viewModelScope.launch { runSpotifySync(spotifyId, title)?.let(onResult) }
+    }
+
+    /**
+     * Re-syncs every saved Spotify playlist that hasn't been synced in
+     * [SPOTIFY_RESYNC_INTERVAL_MS], one after another so the searches don't
+     * pile up. Quiet: a signed-out or offline Spotify just leaves the saved
+     * copies as they were until next time.
+     */
+    fun syncStaleSpotifyPlaylists() {
+        viewModelScope.launch {
+            val now = System.currentTimeMillis()
+            LocalPlaylistStore.syncedPlaylists()
+                .filter { now - it.syncedAt >= SPOTIFY_RESYNC_INTERVAL_MS }
+                .forEach { playlist ->
+                    val spotifyId = playlist.spotifyId ?: return@forEach
+                    // Signed out of Spotify: the rest would fail the same way.
+                    if (runSpotifySync(spotifyId, playlist.title)?.isFailure == true &&
+                        SpotifyLibrary.auth?.tokens() == null
+                    ) return@launch
+                }
+        }
+    }
+
+    /** Null when that playlist is already being synced. */
+    private suspend fun runSpotifySync(
+        spotifyId: String,
+        title: String,
+    ): Result<Pair<LocalPlaylist, SpotifySyncResult>>? {
+        if (spotifyId in _spotifySyncing.value) return null
+        _spotifySyncing.update { it + spotifyId }
+        val result = runCatching {
+            val previous = LocalPlaylistStore.syncedPlaylist(spotifyId)?.syncedTracks.orEmpty()
+            val synced = SpotifySync.sync(spotifyId, previous)
+            check(synced.tracks.isNotEmpty() || previous.isNotEmpty()) { text(R.string.spotify_import_none) }
+            LocalPlaylistStore.saveSynced(spotifyId, title, synced.tracks) to synced
+        }
+        _spotifySyncing.update { it - spotifyId }
+        result.getOrNull()?.first?.let { saved ->
+            if (_detailStack.value.any { it.browseId == saved.browseId }) reloadLocalDetail(saved.browseId)
+        }
+        return result
+    }
 
     fun reloadLocalDetail(browseId: String) {
         viewModelScope.launch {

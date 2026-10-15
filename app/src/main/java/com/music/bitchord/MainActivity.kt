@@ -4476,6 +4476,17 @@ private fun BitChordApp(
             val remote = target.browseId?.startsWith("local:") == false
             val pinnedPlaylists by AppSettings.pinnedPlaylists.collectAsStateWithLifecycle()
             val pinnableId = target.browseId?.takeIf { target.type == BrowseType.PLAYLIST }
+            // A Spotify playlist, or the copy of one saved to the Library: both
+            // can be synced, and the copy is the one thing on this device that
+            // knows which Spotify playlist it follows.
+            val savedPlaylists by com.music.bitchord.data.spotify.LocalPlaylistStore.playlists
+                .collectAsStateWithLifecycle()
+            val localPlaylist = target.browseId?.takeIf { it.startsWith("local:playlist:") }
+                ?.let { id -> savedPlaylists.firstOrNull { it.browseId == id } }
+            val spotifyId = target.browseId?.takeIf { it.startsWith(SPOTIFY_PAGE_PREFIX) }
+                ?.removePrefix(SPOTIFY_PAGE_PREFIX)
+                ?: localPlaylist?.spotifyId
+            val spotifySyncing by viewModel.spotifySyncing.collectAsStateWithLifecycle()
             BrowseActionsSheet(
                 // The live answer, not the one the target was built with.
                 target = target.copy(playlist = playlist),
@@ -4598,7 +4609,43 @@ private fun BitChordApp(
                         browseActions = null
                         viewModel.deletePlaylist(p)
                     }
+                } ?: localPlaylist?.let { p ->
+                    {
+                        browseActions = null
+                        if (detail?.browseId == p.browseId) viewModel.closeDetail()
+                        com.music.bitchord.data.spotify.LocalPlaylistStore.deletePlaylist(p.id)
+                    }
                 },
+                onSpotifySync = spotifyId?.let { id ->
+                    {
+                        browseActions = null
+                        val wasSynced = savedPlaylists.any { it.spotifyId == id }
+                        viewModel.syncSpotifyPlaylist(id, localPlaylist?.title ?: target.title) { result ->
+                            val message = result.fold(
+                                onSuccess = { (saved, sync) ->
+                                    listOfNotNull(
+                                        if (wasSynced) {
+                                            context.getString(R.string.spotify_sync_updated, saved.title, sync.added, sync.removed)
+                                        } else {
+                                            context.getString(R.string.spotify_sync_saved, saved.title)
+                                        },
+                                        sync.unmatched.takeIf { it > 0 }
+                                            ?.let { context.getString(R.string.spotify_import_unmatched, it) },
+                                    ).joinToString("\n")
+                                },
+                                onFailure = {
+                                    context.getString(
+                                        R.string.spotify_sync_failed,
+                                        it.message ?: context.getString(R.string.failed),
+                                    )
+                                },
+                            )
+                            Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+                        }
+                    }
+                },
+                spotifySynced = spotifyId != null && savedPlaylists.any { it.spotifyId == spotifyId },
+                spotifySyncing = spotifyId != null && spotifyId in spotifySyncing,
                 onDeleteDownload = target.downloadId?.let { id ->
                     {
                         browseActions = null
