@@ -25,13 +25,29 @@ jobs:
         echo "LASTFM_API_KEY=${{ secrets.LASTFM_API_KEY }}" > local.properties
         echo "LASTFM_SECRET=${{ secrets.LASTFM_SECRET }}" >> local.properties
 
-        echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > bitchord-release.jks
-        {
-          echo "storeFile=bitchord-release.jks"
-          echo "storePassword=${{ secrets.KEYSTORE_PASSWORD }}"
-          echo "keyAlias=${{ secrets.KEY_ALIAS }}"
-          echo "keyPassword=${{ secrets.KEY_PASSWORD }}"
-        } > keystore.properties
+        if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ]; then
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > bitchord-release.jks
+          {
+            echo "storeFile=bitchord-release.jks"
+            echo "storePassword=${{ secrets.KEYSTORE_PASSWORD }}"
+            echo "keyAlias=${{ secrets.KEY_ALIAS }}"
+            echo "keyPassword=${{ secrets.KEY_PASSWORD }}"
+          } > keystore.properties
+        else
+          # No release keystore configured: sign with a throwaway key so the
+          # APK is still installable for testing. It will not update over an
+          # install signed with the real release key.
+          echo "::warning::KEYSTORE_BASE64 is not set; signing with a throwaway test key"
+          keytool -genkeypair -keystore bitchord-test.jks -storetype PKCS12 \
+            -storepass testpass -keypass testpass -alias test \
+            -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=BitChord Test"
+          {
+            echo "storeFile=bitchord-test.jks"
+            echo "storePassword=testpass"
+            echo "keyAlias=test"
+            echo "keyPassword=testpass"
+          } > keystore.properties
+        fi
 
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
