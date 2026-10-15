@@ -120,6 +120,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.music.bitchord.auth.DiscordLoginScreen
 import com.music.bitchord.auth.WebSessionMode
 import com.music.bitchord.auth.YtMusicLoginScreen
+import com.music.bitchord.auth.rememberDeviceGoogleAccountPicker
 import com.music.bitchord.data.AppUpdateChecker
 import com.music.bitchord.data.LocalMediaRepository
 import com.music.bitchord.data.listentogether.JamInviteLink
@@ -4694,6 +4695,18 @@ private fun BitChordApp(
             var captureFailed by remember(mode) { mutableStateOf(false) }
             var pageReady by remember(mode) { mutableStateOf(false) }
             var confirmingProfile by remember(mode) { mutableStateOf(false) }
+            // A new sign-in starts from Android's own Google account chooser,
+            // and the web login opens on whichever account was picked. Switching
+            // channel keeps the account already saved, so it has nothing to
+            // choose and goes straight to the page. The browser waits for the answer: its
+            // first URL is the only one that carries the hint.
+            var accountChosen by remember(mode) { mutableStateOf(mode != WebSessionMode.SIGN_IN) }
+            var loginHint by remember(mode) { mutableStateOf<String?>(null) }
+            val chooseDeviceAccount = rememberDeviceGoogleAccountPicker { email ->
+                loginHint = email
+                accountChosen = true
+            }
+            LaunchedEffect(mode) { if (!accountChosen) chooseDeviceAccount() }
             Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                 Column(Modifier.fillMaxSize()) {
                     Row(
@@ -4745,8 +4758,9 @@ private fun BitChordApp(
                             }
                         }
                     }
-                    YtMusicLoginScreen(
+                    if (accountChosen) YtMusicLoginScreen(
                         mode = mode,
+                        loginHint = loginHint,
                         initialCookie = if (mode == WebSessionMode.SWITCH_CHANNEL) {
                             googleAccounts.firstOrNull { it.accountId == activeAccountId }?.cookie
                         } else null,
