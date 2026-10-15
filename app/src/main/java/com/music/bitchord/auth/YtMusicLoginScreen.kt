@@ -20,6 +20,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
+import java.net.URLEncoder
 
 private const val MUSIC_ORIGIN = "https://music.youtube.com"
 
@@ -27,6 +28,20 @@ private const val LOGIN_URL =
     "https://accounts.google.com/ServiceLogin" +
         "?ltmpl=music&service=youtube&passive=true" +
     "&continue=https%3A%2F%2Fmusic.youtube.com%2F"
+
+/**
+ * The Google login page, opened on [loginHint] when there is one.
+ *
+ * `Email` is what ServiceLogin carries through to its identifier step, which
+ * then skips straight to confirming that account rather than asking for an
+ * address. A hint is a convenience and nothing more: Google still decides how
+ * the account is verified, and the listener can still pick "Use another
+ * account" from there.
+ */
+internal fun signInUrl(loginHint: String?): String {
+    val hint = loginHint?.trim()?.takeIf { it.isNotEmpty() } ?: return LOGIN_URL
+    return "$LOGIN_URL&Email=${URLEncoder.encode(hint, Charsets.UTF_8.name())}"
+}
 
 private const val TAG = "BitChord"
 
@@ -57,6 +72,11 @@ private const val TAG = "BitChord"
 @Composable
 fun YtMusicLoginScreen(
     mode: WebSessionMode,
+    /**
+     * Address of the device account picked in Android's own chooser, if any.
+     * Only used by [WebSessionMode.SIGN_IN]; see [signInUrl].
+     */
+    loginHint: String? = null,
     /** Cookie snapshot to install before opening an existing account's channel picker. */
     initialCookie: String? = null,
     onCaptured: (CapturedSession) -> Unit,
@@ -108,7 +128,7 @@ fun YtMusicLoginScreen(
                 }
 
                 webView = this
-                loadUrl(if (mode == WebSessionMode.SIGN_IN) LOGIN_URL else "$MUSIC_ORIGIN/")
+                loadUrl(if (mode == WebSessionMode.SIGN_IN) signInUrl(loginHint) else "$MUSIC_ORIGIN/")
             }
         },
     )
